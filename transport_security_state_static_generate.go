@@ -488,18 +488,23 @@ func writeListOfPins(w io.Writer, name string, pinNames []string) {
 
 // toDNS returns a string converts the domain name |s| into C-escaped,
 // length-prefixed form and also returns the length of the interpreted string.
-// i.e. for an input "example.com" it will return "\\007example\\003com", 13.
+// i.e. for an input "example.com" it will return "\\007" "example" "\\003"
+// "com", 13. The octal length bytes are in their own string because Visual
+// Studio won't accept a digit after an octal escape otherwise.
 func toDNS(s string) (string, int) {
 	labels := strings.Split(s, ".")
 
 	var name string
 	var l int
-	for _, label := range labels {
+	for i, label := range labels {
 		if len(label) > 63 {
 			panic("DNS label too long")
 		}
-		name += fmt.Sprintf("\\%03o", len(label))
-		name += label
+		if i > 0 {
+			name += " "
+		}
+		name += fmt.Sprintf("\"\\%03o\" ", len(label))
+		name += "\"" + label + "\""
 		l += len(label) + 1
 	}
 	l += 1 // For the length of the root label.
@@ -525,7 +530,7 @@ func writeHSTSEntry(out *bufio.Writer, entry hsts) {
 		pinsetName = fmt.Sprintf("k%sPins", uppercaseFirstLetter(entry.Pins))
 		domain = domainConstant(entry.Name)
 	}
-	fmt.Fprintf(out, "  {%d, %t, \"%s\", %t, %s, %s },\n", dnsLen, entry.Subdomains, dnsName, entry.Mode == "force-https", pinsetName, domain)
+	fmt.Fprintf(out, "  {%d, %t, %s, %t, %s, %s },\n", dnsLen, entry.Subdomains, dnsName, entry.Mode == "force-https", pinsetName, domain)
 }
 
 func writeHSTSOutput(out *bufio.Writer, hsts preloaded) error {
