@@ -61,7 +61,6 @@ type hsts struct {
 	Subdomains bool   `json:"include_subdomains"`
 	Mode       string `json:"mode"`
 	Pins       string `json:"pins"`
-	SNIOnly    bool   `json:"snionly"`
 }
 
 func main() {
@@ -570,27 +569,11 @@ static const struct HSTSPreload kPreloadedSTS[] = {
 `)
 
 	for _, entry := range hsts.Entries {
-		if entry.SNIOnly {
-			continue
-		}
 		writeHSTSEntry(out, entry)
 	}
 
 	out.WriteString(`};
 static const size_t kNumPreloadedSTS = ARRAYSIZE_UNSAFE(kPreloadedSTS);
-
-static const struct HSTSPreload kPreloadedSNISTS[] = {
-`)
-
-	for _, entry := range hsts.Entries {
-		if !entry.SNIOnly {
-			continue
-		}
-		writeHSTSEntry(out, entry)
-	}
-
-	out.WriteString(`};
-static const size_t kNumPreloadedSNISTS = ARRAYSIZE_UNSAFE(kPreloadedSNISTS);
 
 `)
 
