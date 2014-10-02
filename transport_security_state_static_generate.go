@@ -26,8 +26,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -48,6 +50,7 @@ type pin struct {
 type preloaded struct {
 	Pinsets []pinset `json:"pinsets"`
 	Entries []hsts   `json:"entries"`
+	DomainIds []string `json:"domain_ids"`
 }
 
 type pinset struct {
@@ -127,6 +130,7 @@ func process(jsonFileName, certsFileName string) error {
 
 	out := bufio.NewWriter(outFile)
 	writeHeader(out)
+	writeDomainIds(out, preloaded.DomainIds)
 	writeCertsOutput(out, pins)
 	writeHSTSOutput(out, preloaded)
 	writeFooter(out)
@@ -445,6 +449,20 @@ func writeFooter(out *bufio.Writer) {
 	out.WriteString("#endif // NET_HTTP_TRANSPORT_SECURITY_STATE_STATIC_H_\n")
 }
 
+func writeDomainIds(out *bufio.Writer, domainIds []string) {
+	out.WriteString("enum SecondLevelDomainName {\n")
+
+	for _, id := range domainIds {
+		out.WriteString("  DOMAIN_" + id + ",\n")
+	}
+
+	out.WriteString(`  // Boundary value for UMA_HISTOGRAM_ENUMERATION.
+  DOMAIN_NUM_EVENTS,
+};
+
+`);
+}
+
 func writeCertsOutput(out *bufio.Writer, pins []pin) {
 	out.WriteString(`// These are SubjectPublicKeyInfo hashes for public key pinning. The
 // hashes are SHA1 digests.
@@ -521,6 +539,12 @@ func domainConstant(s string) string {
 	return fmt.Sprintf("DOMAIN_%s_%s", domain, gtld)
 }
 
+type pinsetData struct {
+	// index contains the index of the pinset in kPinsets
+	index int
+	acceptPinsVar, rejectPinsVar string
+}
+
 func writeHSTSEntry(out *bufio.Writer, entry hsts) {
 	dnsName, dnsLen := toDNS(entry.Name)
 	domain := "DOMAIN_NOT_PINNED"
@@ -543,6 +567,11 @@ static const char* const kNoRejectedPublicKeys[] = {
 
 `)
 
+	// pinsets maps from a pinset string in the JSON file to an index in
+	// the kPinsets array.
+	pinsets := make(map[string]pinsetData)
+	pinsetNum := 0
+
 	for _, pinset := range hsts.Pinsets {
 		name := uppercaseFirstLetter(pinset.Name)
 		acceptableListName := fmt.Sprintf("k%sAcceptableCerts", name)
@@ -553,29 +582,651 @@ static const char* const kNoRejectedPublicKeys[] = {
 			rejectedListName = fmt.Sprintf("k%sRejectedCerts", name)
 			writeListOfPins(out, rejectedListName, pinset.Exclude)
 		}
-		fmt.Fprintf(out, `#define k%sPins { \
-  %s, \
-  %s, \
-}
 
-`, name, acceptableListName, rejectedListName)
+		pinsets[pinset.Name] = pinsetData{pinsetNum, acceptableListName, rejectedListName}
+		pinsetNum++
 	}
 
-	out.WriteString(`#define kNoPins {\
-  NULL, NULL, \
-}
+	out.WriteString(`
+struct Pinset {
+  const char *const *const accepted_pins;
+  const char *const *const rejected_pins;
+};
 
-static const struct HSTSPreload kPreloadedSTS[] = {
+static const struct Pinset kPinsets[] = {
 `)
 
-	for _, entry := range hsts.Entries {
-		writeHSTSEntry(out, entry)
+	for _, pinset := range hsts.Pinsets {
+		data := pinsets[pinset.Name]
+		fmt.Fprintf(out, "  {%s, %s},\n", data.acceptPinsVar, data.rejectPinsVar)
 	}
 
-	out.WriteString(`};
-static const size_t kNumPreloadedSTS = ARRAYSIZE_UNSAFE(kPreloadedSTS);
+	out.WriteString("};\n");
+
+	// domainIds maps from domainConstant(domain) to an index in kDomainIds.
+	domainIds := make(map[string]int)
+	for i, id := range hsts.DomainIds {
+		domainIds["DOMAIN_" + id] = i
+	}
+
+	// First, create a Huffman tree using approximate weights and generate
+	// the output using that. During output, the true counts for each
+	// character will be collected for use in building the real Huffman
+	// tree.
+	root := buildHuffman(approximateHuffman(hsts.Entries))
+	huffmanMap := root.toMap()
+
+	hstsLiteralWriter := cLiteralWriter{out: ioutil.Discard}
+	hstsBitWriter := trieWriter{
+		w: &hstsLiteralWriter,
+		pinsets: pinsets,
+		domainIds: domainIds,
+		huffman: huffmanMap,
+	}
+
+	_, err := writeEntries(&hstsBitWriter, hsts.Entries)
+	if err != nil {
+		return err
+	}
+	hstsBitWriter.Close()
+	origLength := hstsBitWriter.position
+
+	// Now that we have the true counts for each character, build the true
+	// Huffman tree.
+	root = buildHuffman(hstsBitWriter.huffmanCounts)
+	huffmanMap = root.toMap()
+
+	out.WriteString(`
+// kHSTSHuffmanTree describes a Huffman tree. The nodes of the tree are pairs
+// of uint8s. The last node in the array is the root of the tree. Each pair is
+// two uint8 values, the first is "left" and the second is "right". If a uint8
+// value has the MSB set then it represents a literal leaf value. Otherwise
+// it's a pointer to the n'th element of the array.
+static const uint8 kHSTSHuffmanTree[] = {
+`)
+
+	huffmanLiteralWriter := cLiteralWriter{out: out}
+	root.WriteTo(&huffmanLiteralWriter)
+
+	out.WriteString(`
+};
+
+static const uint8 kPreloadedHSTSData[] = {
+`)
+
+	hstsLiteralWriter = cLiteralWriter{out: out}
+	hstsBitWriter = trieWriter{
+		w: &hstsLiteralWriter,
+		pinsets: pinsets,
+		domainIds: domainIds,
+		huffman: huffmanMap,
+	}
+
+	rootPosition, err := writeEntries(&hstsBitWriter, hsts.Entries)
+	if err != nil {
+		return err
+	}
+	hstsBitWriter.Close()
+
+	bitLength := hstsBitWriter.position
+	if debugging {
+		fmt.Fprintf(os.Stderr, "Saved %d bits by using accurate Huffman counts.\n", origLength - bitLength)
+	}
+	out.WriteString(`
+};
 
 `)
+	fmt.Fprintf(out, "static const unsigned kPreloadedHSTSBits = %d;\n\n", bitLength);
+	fmt.Fprintf(out, "static const unsigned kHSTSRootPosition = %d;\n\n", rootPosition);
 
 	return nil
+}
+
+// cLiteralWriter is an io.Writer that formats data suitable as the contents of
+// a uint8_t array literal in C.
+type cLiteralWriter struct {
+	out io.Writer
+	bytesThisLine int
+	count int
+}
+
+func (clw *cLiteralWriter) WriteByte(b byte) (err error) {
+	if clw.bytesThisLine == 8 {
+		if _, err = clw.out.Write([]byte{'\n'}); err != nil {
+			return
+		}
+		clw.bytesThisLine = 0
+	}
+
+	if clw.bytesThisLine == 0 {
+		if _, err = clw.out.Write([]byte("  ")); err != nil {
+			return
+		}
+	} else {
+		if _, err = clw.out.Write([]byte{' '}); err != nil {
+			return
+		}
+	}
+
+	if _, err = fmt.Fprintf(clw.out, "0x%02x,", b); err != nil {
+		return
+	}
+	clw.bytesThisLine++
+	clw.count++
+
+	return
+}
+
+// trieWriter handles wraps an io.Writer and provides a bit writing interface.
+// It also contains the other information needed for writing out a compressed
+// trie.
+type trieWriter struct {
+	w io.ByteWriter
+	pinsets map[string]pinsetData
+	domainIds map[string]int
+	huffman map[rune]bitsAndLen
+	b byte
+	used uint
+	position int
+	huffmanCounts [129]int
+}
+
+func (w *trieWriter) WriteBits(bits, numBits uint) error {
+	for i := uint(1); i <= numBits; i++ {
+		bit := byte(1 & (bits >> (numBits - i)))
+		w.b |= bit << (7 - w.used)
+		w.used++
+		w.position++
+		if w.used == 8 {
+			if err := w.w.WriteByte(w.b); err != nil {
+				return err
+			}
+			w.used = 0
+			w.b = 0
+		}
+	}
+
+	return nil
+}
+
+func (w* trieWriter) Close() error {
+	return w.w.WriteByte(w.b)
+}
+
+// bitsOrPosition contains either some bits (if numBits > 0) or a byte offset
+// in the output (otherwise).
+type bitsOrPosition struct {
+	bits byte
+	numBits uint
+	position int
+}
+
+// bitBuffer buffers up a series of bits and positions because the final output
+// location of the data isn't known yet and so the deltas from the current
+// position to the written positions isn't known yet.
+type bitBuffer struct {
+	b byte
+	used uint
+	elements []bitsOrPosition
+}
+
+func (buf *bitBuffer) WriteBit(bit uint) {
+	buf.b |= byte(bit) << (7 - buf.used)
+	buf.used++
+	if buf.used == 8 {
+		buf.elements = append(buf.elements, bitsOrPosition{buf.b, buf.used, 0})
+		buf.used = 0
+		buf.b = 0
+	}
+}
+
+func (buf *bitBuffer) WriteBits(bits, numBits uint) {
+	for i := uint(1); i <= numBits; i++ {
+		bit := 1 & (bits >> (numBits - i))
+		buf.WriteBit(bit)
+	}
+}
+
+func (buf *bitBuffer) WritePosition(lastPosition *int, position int) {
+	if *lastPosition != -1 {
+		delta := position - *lastPosition
+		if delta <= 0 {
+			panic("delta position is not positive")
+		}
+		numBits := bitLength(delta)
+		if numBits > 7 + 15 {
+			panic("positive position delta too large")
+		}
+		if numBits <= 7 {
+			buf.WriteBits(0, 1)
+			buf.WriteBits(uint(delta), 7)
+		} else {
+			buf.WriteBits(1, 1)
+			buf.WriteBits(numBits - 8, 4)
+			buf.WriteBits(uint(delta), numBits)
+		}
+		*lastPosition = position
+		return
+	}
+
+	if buf.used != 0 {
+		buf.elements = append(buf.elements, bitsOrPosition{buf.b, buf.used, 0})
+		buf.used = 0
+		buf.b = 0
+	}
+
+	buf.elements = append(buf.elements, bitsOrPosition{0, 0, position})
+	*lastPosition = position
+}
+
+func (buf *bitBuffer) WriteChar(b byte, w *trieWriter) {
+	bits, ok := w.huffman[rune(b)]
+	if !ok {
+		panic("WriteChar given rune not in Huffman table")
+	}
+	w.huffmanCounts[rune(b)]++
+	buf.WriteBits(bits.bits, bits.numBits)
+}
+
+func bitLength(i int) uint {
+	numBits := uint(0)
+	for i != 0 {
+		numBits++
+		i >>= 1
+	}
+	return numBits
+}
+
+func (buf *bitBuffer) WriteTo(w *trieWriter) (position int, err error) {
+	position = w.position
+
+	if buf.used != 0 {
+		buf.elements = append(buf.elements, bitsOrPosition{buf.b, buf.used, 0})
+		buf.used = 0
+		buf.b = 0
+	}
+
+	for _, elem := range buf.elements {
+		if elem.numBits != 0 {
+			if err := w.WriteBits(uint(elem.bits) >> (8 - elem.numBits), elem.numBits); err != nil {
+				return -1, err
+			}
+		} else {
+			current := position
+			target := elem.position
+			if target >= current {
+				panic("reference is not backwards")
+			}
+			delta := current - target
+
+			numBits := bitLength(delta)
+
+			if numBits >= 32 {
+				panic("delta is too large")
+			}
+			w.WriteBits(uint(numBits), 5)
+			w.WriteBits(uint(delta), numBits)
+		}
+	}
+
+	return
+}
+
+type reversedEntry struct {
+	bytes []byte
+	hsts *hsts
+}
+
+type reversedEntries []reversedEntry
+
+func (ents reversedEntries) Len() int {
+	return len(ents)
+}
+
+func (ents reversedEntries) Less(i, j int) bool {
+	return bytes.Compare(ents[i].bytes, ents[j].bytes) < 0
+}
+
+func (ents reversedEntries) Swap(i, j int) {
+	ents[i], ents[j] = ents[j], ents[i]
+}
+
+func (ents reversedEntries) LongestCommonPrefix() []byte {
+	if len(ents) == 0 {
+		return nil
+	}
+
+	var prefix []byte
+	for i := 0; ; i++ {
+		if i > len(ents[0].bytes) {
+			break
+		}
+		candidate := ents[0].bytes[i]
+		if candidate == terminalValue {
+			break
+		}
+		ok := true
+
+		for _, ent := range ents[1:] {
+			if i > len(ent.bytes) || ent.bytes[i] != candidate {
+				ok = false
+				break
+			}
+		}
+
+		if !ok {
+			break
+		}
+
+		prefix = append(prefix, candidate)
+	}
+
+	return prefix
+}
+
+func (ents reversedEntries) RemovePrefix(n int) {
+	for i := range ents {
+		ents[i].bytes = ents[i].bytes[n:]
+	}
+}
+
+func reverseName(name string) []byte {
+	reversed := make([]byte, len(name) + 1)
+
+	i := 1
+	for _, r := range name {
+		if r == 0 || r >= 127 {
+			panic("byte in name is out of range.")
+		}
+		reversed[len(name) - i] = byte(r)
+		i++
+	}
+	reversed[len(reversed) - 1] = terminalValue
+	return reversed
+}
+
+func writeEntries(w *trieWriter, hstsEntries []hsts) (positin int, err error) {
+	ents := reversedEntries(make([]reversedEntry, len(hstsEntries)))
+
+	for i := range hstsEntries {
+		ents[i].hsts = &hstsEntries[i]
+		ents[i].bytes = reverseName(hstsEntries[i].Name)
+	}
+
+	sort.Sort(ents)
+
+	return writeDispatchTables(w, ents, 0)
+}
+
+const debugging = false
+
+func writeDispatchTables(w *trieWriter, ents reversedEntries, depth int) (position int, err error) {
+	var buf bitBuffer
+
+	if len(ents) == 0 {
+		panic("empty ents passed to writeDispatchTables")
+	}
+
+	prefix := ents.LongestCommonPrefix()
+	l := len(prefix)
+	for l > 0 {
+		buf.WriteBit(1)
+		l--
+	}
+	buf.WriteBit(0)
+
+	if len(prefix) > 0 {
+		if debugging {
+			for i := 0; i < depth; i++ {
+				fmt.Printf(" ")
+			}
+		}
+		for _, b := range prefix {
+			buf.WriteChar(b, w)
+			if debugging {
+				fmt.Printf("%c", b)
+			}
+			depth++
+		}
+		if debugging {
+			fmt.Printf("\n")
+		}
+	}
+
+	ents.RemovePrefix(len(prefix))
+	lastPosition := -1
+
+	for len(ents) > 0 {
+		var subents reversedEntries
+		b := ents[0].bytes[0]
+		var j int
+
+		for j = 1; j < len(ents); j++ {
+			if ents[j].bytes[0] != b {
+				break
+			}
+		}
+
+		subents = ents[:j]
+		buf.WriteChar(b, w)
+
+		if debugging {
+			for i := 0; i < depth; i++ {
+				fmt.Printf(" ")
+			}
+			fmt.Printf("?%c\n", b)
+		}
+
+		if b == terminalValue {
+			if len(subents) != 1 {
+				panic("multiple values with the same name")
+			}
+			hsts := ents[0].hsts
+
+			includeSubdomains := uint(0)
+			if hsts.Subdomains {
+				includeSubdomains = 1
+			}
+			buf.WriteBit(includeSubdomains)
+
+			forceHTTPS := uint(0)
+			if hsts.Mode == "force-https" {
+				forceHTTPS = 1
+			}
+			buf.WriteBit(forceHTTPS)
+
+			if hsts.Pins == "" {
+				buf.WriteBit(0)
+			} else {
+				buf.WriteBit(1)
+				pinsId := uint(w.pinsets[hsts.Pins].index)
+				if pinsId >= 16 {
+					panic("too many pinsets")
+				}
+				if pinsId >= 16 {
+					panic("too many pinsets")
+				}
+				buf.WriteBits(pinsId, 4)
+
+				domainId := uint(w.domainIds[domainConstant(hsts.Name)])
+				if domainId >= 512 {
+					println(domainId)
+					panic("too many domain ids")
+				}
+				buf.WriteBits(domainId, 9)
+			}
+		} else {
+			subents.RemovePrefix(1)
+			pos, err := writeDispatchTables(w, subents, depth+2)
+			if err != nil {
+				return -1, err
+			}
+			if debugging {
+				for i := 0; i < depth; i++ {
+					fmt.Printf(" ")
+				}
+				fmt.Printf("@%d\n", pos)
+			}
+			buf.WritePosition(&lastPosition, pos)
+		}
+
+		ents = ents[j:]
+	}
+
+	buf.WriteChar(endOfTableValue, w)
+
+	position = w.position
+	buf.WriteTo(w)
+	return
+}
+
+type bitsAndLen struct {
+	bits uint
+	numBits uint
+}
+
+// huffmanNode represents a node in a Huffman tree, where count is the
+// frequency of the value that the node represents and is used only in tree
+// construction.
+type huffmanNode struct {
+	value rune
+	count int
+	left *huffmanNode
+	right *huffmanNode
+}
+
+func (n *huffmanNode) isLeaf() bool {
+	return n.left == nil && n.right == nil
+}
+
+// toMap converts the Huffman tree rooted at n into a map from value to the bit
+// sequence for that value.
+func (n *huffmanNode) toMap() map[rune]bitsAndLen {
+	ret := make(map[rune]bitsAndLen)
+	n.fillMap(ret, 0, 0)
+	return ret
+}
+
+// fillMap is a helper function for toMap the recurses down the Huffman tree
+// and fills in entries in m.
+func (n *huffmanNode) fillMap(m map[rune]bitsAndLen, bits, numBits uint) {
+	if n.isLeaf() {
+		m[n.value] = bitsAndLen{bits, numBits}
+	} else {
+		newBits := bits << 1
+		n.left.fillMap(m, newBits, numBits+1)
+		n.right.fillMap(m, newBits | 1, numBits+1)
+	}
+}
+
+// WriteTo serialises the Huffman tree rooted at n to w in a format that can be
+// processed by the Chromium code. See the comments in Chromium about the
+// format.
+func (n *huffmanNode) WriteTo(w *cLiteralWriter) (position int, err error) {
+	var leftValue, rightValue uint8
+	var childPosition int
+
+	if n.left.isLeaf() {
+		leftValue = 128 | byte(n.left.value)
+	} else {
+		if childPosition, err = n.left.WriteTo(w); err != nil {
+			return
+		}
+		if (childPosition >= 512) {
+			panic("huffman tree too large")
+		}
+		leftValue = byte(childPosition / 2)
+	}
+
+	if n.right.isLeaf() {
+		rightValue = 128 | byte(n.right.value)
+	} else {
+		if childPosition, err = n.right.WriteTo(w); err != nil {
+			return
+		}
+		if (childPosition >= 512) {
+			panic("huffman tree too large")
+		}
+		rightValue = byte(childPosition / 2)
+	}
+
+	position = w.count
+	if err = w.WriteByte(leftValue); err != nil {
+		return
+	}
+	if err = w.WriteByte(rightValue); err != nil {
+		return
+	}
+	return
+}
+
+type nodeList []*huffmanNode
+
+func (l nodeList) Len() int {
+	return len(l)
+}
+
+func (l nodeList) Less(i, j int) bool {
+	return l[i].count < l[j].count
+}
+
+func (l nodeList) Swap(i, j int) {
+	l[i], l[j] = l[j], l[i]
+}
+
+// terminalValue indicates the end of a string (which is the beginning of the
+// string since we process it backwards).
+const terminalValue = 0
+// endOfTableValue is a sentinal value that indicates that there are no more
+// entries in a dispatch table.
+const endOfTableValue = 127
+
+// approximateHuffman calculates an approximate frequency table for entries,
+// for use in building a Huffman tree.
+func approximateHuffman(entries []hsts) (useCounts [129]int) {
+	for _, ent := range entries {
+		for _, r := range ent.Name {
+			if r == 0 || r >= 127 {
+				panic("Rune out of range in name")
+			}
+			useCounts[r]++
+		}
+		useCounts[terminalValue]++
+		useCounts[endOfTableValue]++
+	}
+
+	return
+}
+
+// buildHuffman builds a Huffman tree using useCounts as a frequency table.
+func buildHuffman(useCounts [129]int) (root *huffmanNode) {
+	numNonZero := 0
+	for _, count := range useCounts {
+		if count != 0 {
+			numNonZero++
+		}
+	}
+
+	nodes := nodeList(make([]*huffmanNode, 0, numNonZero))
+	for char, count := range useCounts {
+		if count != 0 {
+			nodes = append(nodes, &huffmanNode{rune(char), count, nil, nil})
+		}
+	}
+
+	if len(nodes) < 2 {
+		panic("cannot build a tree with a single node")
+	}
+
+	sort.Sort(nodes)
+
+	for len(nodes) > 1 {
+		parent := &huffmanNode{0, nodes[0].count + nodes[1].count, nodes[0], nodes[1]}
+		nodes = nodes[1:]
+		nodes[0] = parent
+
+		sort.Sort(nodes)
+	}
+
+	return nodes[0]
 }
