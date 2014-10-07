@@ -48,8 +48,8 @@ type pin struct {
 // following are used by the "json" package to parse the file. See the comments
 // in transport_security_state_static.json for details.
 type preloaded struct {
-	Pinsets []pinset `json:"pinsets"`
-	Entries []hsts   `json:"entries"`
+	Pinsets   []pinset `json:"pinsets"`
+	Entries   []hsts   `json:"entries"`
 	DomainIds []string `json:"domain_ids"`
 }
 
@@ -461,7 +461,7 @@ func writeDomainIds(out *bufio.Writer, domainIds []string) {
   DOMAIN_NUM_EVENTS,
 };
 
-`);
+`)
 }
 
 func writeCertsOutput(out *bufio.Writer, pins []pin) {
@@ -473,10 +473,10 @@ func writeCertsOutput(out *bufio.Writer, pins []pin) {
 	for _, pin := range pins {
 		fmt.Fprintf(out, "static const char kSPKIHash_%s[] =\n", pin.name)
 		var s1, s2 string
-		for _, c := range pin.spkiHash[ : len(pin.spkiHash)/2 ] {
+		for _, c := range pin.spkiHash[:len(pin.spkiHash)/2] {
 			s1 += fmt.Sprintf("\\x%02x", c)
 		}
-		for _, c := range pin.spkiHash[len(pin.spkiHash)/2 : ] {
+		for _, c := range pin.spkiHash[len(pin.spkiHash)/2:] {
 			s2 += fmt.Sprintf("\\x%02x", c)
 		}
 		fmt.Fprintf(out, "    \"%s\"\n    \"%s\";\n\n", s1, s2)
@@ -542,7 +542,7 @@ func domainConstant(s string) string {
 
 type pinsetData struct {
 	// index contains the index of the pinset in kPinsets
-	index int
+	index                        int
 	acceptPinsVar, rejectPinsVar string
 }
 
@@ -602,12 +602,12 @@ static const struct Pinset kPinsets[] = {
 		fmt.Fprintf(out, "  {%s, %s},\n", data.acceptPinsVar, data.rejectPinsVar)
 	}
 
-	out.WriteString("};\n");
+	out.WriteString("};\n")
 
 	// domainIds maps from domainConstant(domain) to an index in kDomainIds.
 	domainIds := make(map[string]int)
 	for i, id := range hsts.DomainIds {
-		domainIds["DOMAIN_" + id] = i
+		domainIds["DOMAIN_"+id] = i
 	}
 
 	// First, create a Huffman tree using approximate weights and generate
@@ -619,10 +619,10 @@ static const struct Pinset kPinsets[] = {
 
 	hstsLiteralWriter := cLiteralWriter{out: ioutil.Discard}
 	hstsBitWriter := trieWriter{
-		w: &hstsLiteralWriter,
-		pinsets: pinsets,
+		w:         &hstsLiteralWriter,
+		pinsets:   pinsets,
 		domainIds: domainIds,
-		huffman: huffmanMap,
+		huffman:   huffmanMap,
 	}
 
 	_, err := writeEntries(&hstsBitWriter, hsts.Entries)
@@ -657,10 +657,10 @@ static const uint8 kPreloadedHSTSData[] = {
 
 	hstsLiteralWriter = cLiteralWriter{out: out}
 	hstsBitWriter = trieWriter{
-		w: &hstsLiteralWriter,
-		pinsets: pinsets,
+		w:         &hstsLiteralWriter,
+		pinsets:   pinsets,
 		domainIds: domainIds,
-		huffman: huffmanMap,
+		huffman:   huffmanMap,
 	}
 
 	rootPosition, err := writeEntries(&hstsBitWriter, hsts.Entries)
@@ -671,14 +671,14 @@ static const uint8 kPreloadedHSTSData[] = {
 
 	bitLength := hstsBitWriter.position
 	if debugging {
-		fmt.Fprintf(os.Stderr, "Saved %d bits by using accurate Huffman counts.\n", origLength - bitLength)
+		fmt.Fprintf(os.Stderr, "Saved %d bits by using accurate Huffman counts.\n", origLength-bitLength)
 	}
 	out.WriteString(`
 };
 
 `)
-	fmt.Fprintf(out, "static const unsigned kPreloadedHSTSBits = %d;\n\n", bitLength);
-	fmt.Fprintf(out, "static const unsigned kHSTSRootPosition = %d;\n\n", rootPosition);
+	fmt.Fprintf(out, "static const unsigned kPreloadedHSTSBits = %d;\n\n", bitLength)
+	fmt.Fprintf(out, "static const unsigned kHSTSRootPosition = %d;\n\n", rootPosition)
 
 	return nil
 }
@@ -686,9 +686,9 @@ static const uint8 kPreloadedHSTSData[] = {
 // cLiteralWriter is an io.Writer that formats data suitable as the contents of
 // a uint8_t array literal in C.
 type cLiteralWriter struct {
-	out io.Writer
+	out           io.Writer
 	bytesThisLine int
-	count int
+	count         int
 }
 
 func (clw *cLiteralWriter) WriteByte(b byte) (err error) {
@@ -722,13 +722,13 @@ func (clw *cLiteralWriter) WriteByte(b byte) (err error) {
 // It also contains the other information needed for writing out a compressed
 // trie.
 type trieWriter struct {
-	w io.ByteWriter
-	pinsets map[string]pinsetData
-	domainIds map[string]int
-	huffman map[rune]bitsAndLen
-	b byte
-	used uint
-	position int
+	w             io.ByteWriter
+	pinsets       map[string]pinsetData
+	domainIds     map[string]int
+	huffman       map[rune]bitsAndLen
+	b             byte
+	used          uint
+	position      int
 	huffmanCounts [129]int
 }
 
@@ -750,15 +750,15 @@ func (w *trieWriter) WriteBits(bits, numBits uint) error {
 	return nil
 }
 
-func (w* trieWriter) Close() error {
+func (w *trieWriter) Close() error {
 	return w.w.WriteByte(w.b)
 }
 
 // bitsOrPosition contains either some bits (if numBits > 0) or a byte offset
 // in the output (otherwise).
 type bitsOrPosition struct {
-	bits byte
-	numBits uint
+	bits     byte
+	numBits  uint
 	position int
 }
 
@@ -766,8 +766,8 @@ type bitsOrPosition struct {
 // location of the data isn't known yet and so the deltas from the current
 // position to the written positions isn't known yet.
 type bitBuffer struct {
-	b byte
-	used uint
+	b        byte
+	used     uint
 	elements []bitsOrPosition
 }
 
@@ -795,7 +795,7 @@ func (buf *bitBuffer) WritePosition(lastPosition *int, position int) {
 			panic("delta position is not positive")
 		}
 		numBits := bitLength(delta)
-		if numBits > 7 + 15 {
+		if numBits > 7+15 {
 			panic("positive position delta too large")
 		}
 		if numBits <= 7 {
@@ -803,7 +803,7 @@ func (buf *bitBuffer) WritePosition(lastPosition *int, position int) {
 			buf.WriteBits(uint(delta), 7)
 		} else {
 			buf.WriteBits(1, 1)
-			buf.WriteBits(numBits - 8, 4)
+			buf.WriteBits(numBits-8, 4)
 			buf.WriteBits(uint(delta), numBits)
 		}
 		*lastPosition = position
@@ -849,7 +849,7 @@ func (buf *bitBuffer) WriteTo(w *trieWriter) (position int, err error) {
 
 	for _, elem := range buf.elements {
 		if elem.numBits != 0 {
-			if err := w.WriteBits(uint(elem.bits) >> (8 - elem.numBits), elem.numBits); err != nil {
+			if err := w.WriteBits(uint(elem.bits)>>(8-elem.numBits), elem.numBits); err != nil {
 				return -1, err
 			}
 		} else {
@@ -875,7 +875,7 @@ func (buf *bitBuffer) WriteTo(w *trieWriter) (position int, err error) {
 
 type reversedEntry struct {
 	bytes []byte
-	hsts *hsts
+	hsts  *hsts
 }
 
 type reversedEntries []reversedEntry
@@ -932,17 +932,17 @@ func (ents reversedEntries) RemovePrefix(n int) {
 }
 
 func reverseName(name string) []byte {
-	reversed := make([]byte, len(name) + 1)
+	reversed := make([]byte, len(name)+1)
 
 	i := 1
 	for _, r := range name {
 		if r == 0 || r >= 127 {
 			panic("byte in name is out of range.")
 		}
-		reversed[len(name) - i] = byte(r)
+		reversed[len(name)-i] = byte(r)
 		i++
 	}
-	reversed[len(reversed) - 1] = terminalValue
+	reversed[len(reversed)-1] = terminalValue
 	return reversed
 }
 
@@ -1082,7 +1082,7 @@ func writeDispatchTables(w *trieWriter, ents reversedEntries, depth int) (positi
 }
 
 type bitsAndLen struct {
-	bits uint
+	bits    uint
 	numBits uint
 }
 
@@ -1092,7 +1092,7 @@ type bitsAndLen struct {
 type huffmanNode struct {
 	value rune
 	count int
-	left *huffmanNode
+	left  *huffmanNode
 	right *huffmanNode
 }
 
@@ -1116,7 +1116,7 @@ func (n *huffmanNode) fillMap(m map[rune]bitsAndLen, bits, numBits uint) {
 	} else {
 		newBits := bits << 1
 		n.left.fillMap(m, newBits, numBits+1)
-		n.right.fillMap(m, newBits | 1, numBits+1)
+		n.right.fillMap(m, newBits|1, numBits+1)
 	}
 }
 
@@ -1133,7 +1133,7 @@ func (n *huffmanNode) WriteTo(w *cLiteralWriter) (position int, err error) {
 		if childPosition, err = n.left.WriteTo(w); err != nil {
 			return
 		}
-		if (childPosition >= 512) {
+		if childPosition >= 512 {
 			panic("huffman tree too large")
 		}
 		leftValue = byte(childPosition / 2)
@@ -1145,7 +1145,7 @@ func (n *huffmanNode) WriteTo(w *cLiteralWriter) (position int, err error) {
 		if childPosition, err = n.right.WriteTo(w); err != nil {
 			return
 		}
-		if (childPosition >= 512) {
+		if childPosition >= 512 {
 			panic("huffman tree too large")
 		}
 		rightValue = byte(childPosition / 2)
@@ -1178,6 +1178,7 @@ func (l nodeList) Swap(i, j int) {
 // terminalValue indicates the end of a string (which is the beginning of the
 // string since we process it backwards).
 const terminalValue = 0
+
 // endOfTableValue is a sentinal value that indicates that there are no more
 // entries in a dispatch table.
 const endOfTableValue = 127
