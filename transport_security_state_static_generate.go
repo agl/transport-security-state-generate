@@ -954,7 +954,7 @@ func writeEntries(w *trieWriter, hstsEntries []hsts) (positin int, err error) {
 		ents[i].bytes = reverseName(hstsEntries[i].Name)
 	}
 
-	sort.Sort(ents)
+	sort.Stable(ents)
 
 	return writeDispatchTables(w, ents, 0)
 }
@@ -1041,9 +1041,6 @@ func writeDispatchTables(w *trieWriter, ents reversedEntries, depth int) (positi
 			} else {
 				buf.WriteBit(1)
 				pinsId := uint(w.pinsets[hsts.Pins].index)
-				if pinsId >= 16 {
-					panic("too many pinsets")
-				}
 				if pinsId >= 16 {
 					panic("too many pinsets")
 				}
@@ -1220,14 +1217,14 @@ func buildHuffman(useCounts [129]int) (root *huffmanNode) {
 		panic("cannot build a tree with a single node")
 	}
 
-	sort.Sort(nodes)
+	sort.Stable(nodes)
 
 	for len(nodes) > 1 {
 		parent := &huffmanNode{0, nodes[0].count + nodes[1].count, nodes[0], nodes[1]}
 		nodes = nodes[1:]
 		nodes[0] = parent
 
-		sort.Sort(nodes)
+		sort.Stable(nodes)
 	}
 
 	return nodes[0]
