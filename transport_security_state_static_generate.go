@@ -1049,12 +1049,15 @@ func writeDispatchTables(w *trieWriter, ents reversedEntries, depth int) (positi
 				}
 				buf.WriteBits(pinsId, 4)
 
-				domainId := uint(w.domainIds[domainConstant(hsts.Name)])
+				domainId, included := w.domainIds[domainConstant(hsts.Name)]
+				if !included {
+					panic("missing domain ID for " + hsts.Name)
+				}
 				if domainId >= 512 {
 					println(domainId)
 					panic("too many domain ids")
 				}
-				buf.WriteBits(domainId, 9)
+				buf.WriteBits(uint(domainId), 9)
 			}
 		} else {
 			subents.RemovePrefix(1)
