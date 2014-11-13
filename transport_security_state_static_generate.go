@@ -60,10 +60,11 @@ type pinset struct {
 }
 
 type hsts struct {
-	Name       string `json:"name"`
-	Subdomains bool   `json:"include_subdomains"`
-	Mode       string `json:"mode"`
-	Pins       string `json:"pins"`
+	Name                 string `json:"name"`
+	Subdomains           bool   `json:"include_subdomains"`
+	SubdomainsForPinning bool   `json:"include_subdomains_for_pinning"`
+	Mode                 string `json:"mode"`
+	Pins                 string `json:"pins"`
 }
 
 func main() {
@@ -119,6 +120,10 @@ func process(jsonFileName, certsFileName string) error {
 	}
 
 	if err := checkDuplicateEntries(preloaded.Entries); err != nil {
+		return err
+	}
+
+	if err := checkSubdomainsFlags(preloaded.Entries); err != nil {
 		return err
 	}
 
@@ -418,6 +423,16 @@ func checkNoopEntries(entries []hsts) error {
 	return nil
 }
 
+func checkSubdomainsFlags(entries []hsts) error {
+	for _, e := range entries {
+		if e.SubdomainsForPinning && e.Subdomains {
+			return errors.New("Entry for " + e.Name + " sets include_subdomains_for_pinning but also sets include_subdomains, which implies it")
+		}
+	}
+
+	return nil
+}
+
 func checkDuplicateEntries(entries []hsts) error {
 	seen := make(map[string]bool)
 
@@ -544,17 +559,6 @@ type pinsetData struct {
 	// index contains the index of the pinset in kPinsets
 	index                        int
 	acceptPinsVar, rejectPinsVar string
-}
-
-func writeHSTSEntry(out *bufio.Writer, entry hsts) {
-	dnsName, dnsLen := toDNS(entry.Name)
-	domain := "DOMAIN_NOT_PINNED"
-	pinsetName := "kNoPins"
-	if len(entry.Pins) > 0 {
-		pinsetName = fmt.Sprintf("k%sPins", uppercaseFirstLetter(entry.Pins))
-		domain = domainConstant(entry.Name)
-	}
-	fmt.Fprintf(out, "  {%d, %t, %s, %t, %s, %s },\n", dnsLen, entry.Subdomains, dnsName, entry.Mode == "force-https", pinsetName, domain)
 }
 
 func writeHSTSOutput(out *bufio.Writer, hsts preloaded) error {
@@ -1058,6 +1062,13 @@ func writeDispatchTables(w *trieWriter, ents reversedEntries, depth int) (positi
 					panic("too many domain ids")
 				}
 				buf.WriteBits(uint(domainId), 9)
+				if !hsts.Subdomains {
+					includeSubdomainsForPinning := uint(0)
+					if hsts.SubdomainsForPinning {
+						includeSubdomainsForPinning = 1
+					}
+					buf.WriteBit(includeSubdomainsForPinning)
+				}
 			}
 		} else {
 			subents.RemovePrefix(1)
