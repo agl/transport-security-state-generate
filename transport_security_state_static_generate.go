@@ -696,7 +696,7 @@ type cLiteralWriter struct {
 }
 
 func (clw *cLiteralWriter) WriteByte(b byte) (err error) {
-	if clw.bytesThisLine == 8 {
+	if clw.bytesThisLine == 12 {
 		if _, err = clw.out.Write([]byte{'\n'}); err != nil {
 			return
 		}
