@@ -704,7 +704,7 @@ func (clw *cLiteralWriter) WriteByte(b byte) (err error) {
 	}
 
 	if clw.bytesThisLine == 0 {
-		if _, err = clw.out.Write([]byte("  ")); err != nil {
+		if _, err = clw.out.Write([]byte("    ")); err != nil {
 			return
 		}
 	} else {
