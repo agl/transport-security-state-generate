@@ -550,8 +550,10 @@ func toDNS(s string) (string, int) {
 func domainConstant(s string) string {
 	labels := strings.Split(s, ".")
 	gtld := strings.ToUpper(labels[len(labels)-1])
+	if len(labels) == 1 {
+		return fmt.Sprintf("DOMAIN_%s", gtld)
+	}
 	domain := strings.Replace(strings.ToUpper(labels[len(labels)-2]), "-", "_", -1)
-
 	return fmt.Sprintf("DOMAIN_%s_%s", domain, gtld)
 }
 
