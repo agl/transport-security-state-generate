@@ -54,9 +54,10 @@ type preloaded struct {
 }
 
 type pinset struct {
-	Name    string   `json:"name"`
-	Include []string `json:"static_spki_hashes"`
-	Exclude []string `json:"bad_static_spki_hashes"`
+	Name      string   `json:"name"`
+	Include   []string `json:"static_spki_hashes"`
+	Exclude   []string `json:"bad_static_spki_hashes"`
+	ReportUri string   `json:"report_uri"`
 }
 
 type hsts struct {
@@ -519,6 +520,10 @@ func writeListOfPins(w io.Writer, name string, pinNames []string) {
 	fmt.Fprintf(w, "  NULL,\n};\n")
 }
 
+func writePinsetReportUri(w io.Writer, name string, reportUri string) {
+	fmt.Fprintf(w, "static const char %s[] = \"%s\";\n", name, reportUri)
+}
+
 // toDNS returns a string converts the domain name |s| into C-escaped,
 // length-prefixed form and also returns the length of the interpreted string.
 // i.e. for an input "example.com" it will return "\\007" "example" "\\003"
@@ -559,8 +564,8 @@ func domainConstant(s string) string {
 
 type pinsetData struct {
 	// index contains the index of the pinset in kPinsets
-	index                        int
-	acceptPinsVar, rejectPinsVar string
+	index                                      int
+	acceptPinsVar, rejectPinsVar, reportUriVar string
 }
 
 func writeHSTSOutput(out *bufio.Writer, hsts preloaded) error {
@@ -571,6 +576,9 @@ func writeHSTSOutput(out *bufio.Writer, hsts preloaded) error {
 static const char* const kNoRejectedPublicKeys[] = {
   NULL,
 };
+
+// kNoReportUri is a placeholder for when a pinset does not have a report URI.
+static const char kNoReportUri[] = "";
 
 `)
 
@@ -590,7 +598,13 @@ static const char* const kNoRejectedPublicKeys[] = {
 			writeListOfPins(out, rejectedListName, pinset.Exclude)
 		}
 
-		pinsets[pinset.Name] = pinsetData{pinsetNum, acceptableListName, rejectedListName}
+		reportUriName := "kNoReportUri"
+		if len(pinset.ReportUri) > 0 {
+			reportUriName = fmt.Sprintf("k%sReportUri", name)
+			writePinsetReportUri(out, reportUriName, pinset.ReportUri)
+		}
+
+		pinsets[pinset.Name] = pinsetData{pinsetNum, acceptableListName, rejectedListName, reportUriName}
 		pinsetNum++
 	}
 
@@ -598,6 +612,7 @@ static const char* const kNoRejectedPublicKeys[] = {
 struct Pinset {
   const char *const *const accepted_pins;
   const char *const *const rejected_pins;
+  const char *const report_uri;
 };
 
 static const struct Pinset kPinsets[] = {
@@ -605,7 +620,7 @@ static const struct Pinset kPinsets[] = {
 
 	for _, pinset := range hsts.Pinsets {
 		data := pinsets[pinset.Name]
-		fmt.Fprintf(out, "  {%s, %s},\n", data.acceptPinsVar, data.rejectPinsVar)
+		fmt.Fprintf(out, "  {%s, %s, %s},\n", data.acceptPinsVar, data.rejectPinsVar, data.reportUriVar)
 	}
 
 	out.WriteString("};\n")
