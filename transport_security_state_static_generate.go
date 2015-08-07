@@ -54,9 +54,10 @@ type preloaded struct {
 }
 
 type pinset struct {
-	Name    string   `json:"name"`
-	Include []string `json:"static_spki_hashes"`
-	Exclude []string `json:"bad_static_spki_hashes"`
+	Name      string   `json:"name"`
+	Include   []string `json:"static_spki_hashes"`
+	Exclude   []string `json:"bad_static_spki_hashes"`
+	ReportURI string   `json:"report_uri"`
 }
 
 type hsts struct {
@@ -559,8 +560,8 @@ func domainConstant(s string) string {
 
 type pinsetData struct {
 	// index contains the index of the pinset in kPinsets
-	index                        int
-	acceptPinsVar, rejectPinsVar string
+	index                                      int
+	acceptPinsVar, rejectPinsVar, reportURIVar string
 }
 
 func writeHSTSOutput(out *bufio.Writer, hsts preloaded) error {
@@ -571,6 +572,9 @@ func writeHSTSOutput(out *bufio.Writer, hsts preloaded) error {
 static const char* const kNoRejectedPublicKeys[] = {
   NULL,
 };
+
+// kNoReportURI is a placeholder for when a pinset does not have a report URI.
+static const char kNoReportURI[] = "";
 
 `)
 
@@ -590,7 +594,13 @@ static const char* const kNoRejectedPublicKeys[] = {
 			writeListOfPins(out, rejectedListName, pinset.Exclude)
 		}
 
-		pinsets[pinset.Name] = pinsetData{pinsetNum, acceptableListName, rejectedListName}
+		reportURIName := "kNoReportURI"
+		if reportURI := pinset.ReportURI; len(reportURI) > 0 {
+			reportURIName = fmt.Sprintf("k%sReportURI", name)
+			fmt.Fprintf(out, "static const char %s[] = %q;\n", reportURIName, reportURI)
+		}
+
+		pinsets[pinset.Name] = pinsetData{pinsetNum, acceptableListName, rejectedListName, reportURIName}
 		pinsetNum++
 	}
 
@@ -598,6 +608,7 @@ static const char* const kNoRejectedPublicKeys[] = {
 struct Pinset {
   const char *const *const accepted_pins;
   const char *const *const rejected_pins;
+  const char *const report_uri;
 };
 
 static const struct Pinset kPinsets[] = {
@@ -605,7 +616,7 @@ static const struct Pinset kPinsets[] = {
 
 	for _, pinset := range hsts.Pinsets {
 		data := pinsets[pinset.Name]
-		fmt.Fprintf(out, "  {%s, %s},\n", data.acceptPinsVar, data.rejectPinsVar)
+		fmt.Fprintf(out, "  {%s, %s, %s},\n", data.acceptPinsVar, data.rejectPinsVar, data.reportURIVar)
 	}
 
 	out.WriteString("};\n")
