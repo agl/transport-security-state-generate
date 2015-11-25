@@ -39,6 +39,7 @@ import (
 type pin struct {
 	name         string
 	cert         *x509.Certificate
+	publicKey    *pem.Block
 	spkiHash     []byte
 	spkiHashFunc string // i.e. "sha1"
 }
@@ -148,6 +149,8 @@ func process(jsonFileName, certsFileName string) error {
 var newLine = []byte("\n")
 var startOfCert = []byte("-----BEGIN CERTIFICATE")
 var endOfCert = []byte("-----END CERTIFICATE")
+var startOfPublicKey = []byte("-----BEGIN PUBLIC KEY")
+var endOfPublicKey = []byte("-----END PUBLIC KEY")
 var startOfSHA1 = []byte("sha1/")
 
 // nameRegexp matches valid pin names: an uppercase letter followed by zero or
@@ -190,15 +193,17 @@ func removeComments(r io.Reader) ([]byte, error) {
 // file for details of the format.
 func parseCertsFile(inFile io.Reader) ([]pin, error) {
 	const (
-		PRENAME  = iota
-		POSTNAME = iota
-		INCERT   = iota
+		PRENAME     = iota
+		POSTNAME    = iota
+		INCERT      = iota
+		INPUBLICKEY = iota
 	)
 
 	in := bufio.NewReader(inFile)
 
 	lineNo := 0
 	var pemCert []byte
+	var pemPublicKey []byte
 	state := PRENAME
 	var name string
 	var pins []pin
@@ -249,6 +254,11 @@ func parseCertsFile(inFile io.Reader) ([]pin, error) {
 				pemCert = append(pemCert, line...)
 				pemCert = append(pemCert, '\n')
 				state = INCERT
+			case bytes.HasPrefix(line, startOfPublicKey):
+				pemPublicKey = pemPublicKey[:0]
+				pemPublicKey = append(pemPublicKey, line...)
+				pemPublicKey = append(pemPublicKey, '\n')
+				state = INPUBLICKEY
 			default:
 				return nil, fmt.Errorf("line %d, after a name, is not a hash nor a certificate\n", lineNo)
 			}
@@ -279,6 +289,26 @@ func parseCertsFile(inFile io.Reader) ([]pin, error) {
 			pins = append(pins, pin{
 				name:         name,
 				cert:         cert,
+				spkiHashFunc: "sha1",
+				spkiHash:     h.Sum(nil),
+			})
+			state = PRENAME
+		case INPUBLICKEY:
+			pemPublicKey = append(pemPublicKey, line...)
+			pemPublicKey = append(pemPublicKey, '\n')
+			if !bytes.HasPrefix(line, endOfPublicKey) {
+				continue
+			}
+
+			rawPublicKey, _ := pem.Decode(pemPublicKey)
+			if rawPublicKey == nil {
+				return nil, fmt.Errorf("failed to decode public key ending on line %d\n", lineNo)
+			}
+			h := sha1.New()
+			h.Write(rawPublicKey.Bytes)
+			pins = append(pins, pin{
+				name:         name,
+				publicKey:    rawPublicKey,
 				spkiHashFunc: "sha1",
 				spkiHash:     h.Sum(nil),
 			})
