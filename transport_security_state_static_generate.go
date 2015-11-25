@@ -194,10 +194,10 @@ func removeComments(r io.Reader) ([]byte, error) {
 // file for details of the format.
 func parseCertsFile(inFile io.Reader) ([]pin, error) {
 	const (
-		PRENAME     = iota
-		POSTNAME    = iota
-		INCERT      = iota
-		INPUBLICKEY = iota
+		PRENAME = iota
+		POSTNAME
+		INCERT
+		INPUBLICKEY
 	)
 
 	in := bufio.NewReader(inFile)
