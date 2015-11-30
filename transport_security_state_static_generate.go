@@ -345,10 +345,11 @@ func matchNames(name, v string) error {
 	if len(firstWord) == 0 {
 		return errors.New("first word of certificate name is empty")
 	}
+	firstWord = regexp.MustCompile("[^A-Za-z0-9_]+").ReplaceAllString(firstWord, "")
 	firstWord = strings.ToLower(firstWord)
 	lowerV := strings.ToLower(v)
 	if !strings.HasPrefix(lowerV, firstWord) {
-		return errors.New("the first word of the certificate name isn't a prefix of the variable name")
+		return fmt.Errorf("the first word of the certificate name (%s) isn't a prefix of the variable name (%s)", firstWord, lowerV)
 	}
 
 	for i, word := range words {
