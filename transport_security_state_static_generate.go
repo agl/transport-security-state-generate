@@ -67,6 +67,8 @@ type hsts struct {
 	SubdomainsForPinning bool   `json:"include_subdomains_for_pinning"`
 	Mode                 string `json:"mode"`
 	Pins                 string `json:"pins"`
+	ExpectCT             bool   `json:"expect_ct"`
+	ExpectCTReportURI    string `json:"expect_ct_report_uri"`
 }
 
 func main() {
@@ -139,7 +141,8 @@ func process(jsonFileName, certsFileName string) error {
 	writeHeader(out)
 	writeDomainIds(out, preloaded.DomainIds)
 	writeCertsOutput(out, pins)
-	writeHSTSOutput(out, preloaded)
+	expectCTReportURIIds := writeExpectCTReportURIIds(out, preloaded.Entries)
+	writeHSTSOutput(out, preloaded, expectCTReportURIIds)
 	writeFooter(out)
 	out.Flush()
 
@@ -444,13 +447,13 @@ func checkCertsInPinsets(pinsets []pinset, pins []pin) error {
 
 func checkNoopEntries(entries []hsts) error {
 	for _, e := range entries {
-		if len(e.Mode) == 0 && len(e.Pins) == 0 {
+		if len(e.Mode) == 0 && len(e.Pins) == 0 && !e.ExpectCT {
 			switch e.Name {
 			// This entry is deliberately used as an exclusion.
 			case "learn.doubleclick.net":
 				continue
 			default:
-				return errors.New("Entry for " + e.Name + " has no mode and no pins")
+				return errors.New("Entry for " + e.Name + " has no mode and no pins and is not expect-CT")
 			}
 		}
 	}
@@ -512,6 +515,25 @@ func writeDomainIds(out *bufio.Writer, domainIds []string) {
 };
 
 `)
+}
+
+func writeExpectCTReportURIIds(out *bufio.Writer, entries []hsts) map[string]int {
+	result := make(map[string]int)
+	i := 0
+
+	out.WriteString("static const char* const kExpectCTReportURIs[] = {\n")
+	for _, e := range entries {
+		if e.ExpectCT {
+			if _, seen := result[e.ExpectCTReportURI]; !seen {
+				out.WriteString("  \"" + e.ExpectCTReportURI + "\",\n")
+				result[e.ExpectCTReportURI] = i
+				i = i + 1
+			}
+		}
+	}
+
+	out.WriteString("};\n")
+	return result
 }
 
 func writeCertsOutput(out *bufio.Writer, pins []pin) {
@@ -598,7 +620,7 @@ type pinsetData struct {
 	acceptPinsVar, rejectPinsVar, reportURIVar string
 }
 
-func writeHSTSOutput(out *bufio.Writer, hsts preloaded) error {
+func writeHSTSOutput(out *bufio.Writer, hsts preloaded, expectCTReportURIIds map[string]int) error {
 	out.WriteString(`// The following is static data describing the hosts that are hardcoded with
 // certificate pins or HSTS information.
 
@@ -670,10 +692,11 @@ static const struct Pinset kPinsets[] = {
 
 	hstsLiteralWriter := cLiteralWriter{out: ioutil.Discard}
 	hstsBitWriter := trieWriter{
-		w:         &hstsLiteralWriter,
-		pinsets:   pinsets,
-		domainIds: domainIds,
-		huffman:   huffmanMap,
+		w:                    &hstsLiteralWriter,
+		pinsets:              pinsets,
+		domainIds:            domainIds,
+		expectCTReportURIIds: expectCTReportURIIds,
+		huffman:              huffmanMap,
 	}
 
 	_, err := writeEntries(&hstsBitWriter, hsts.Entries)
@@ -708,10 +731,11 @@ static const uint8 kPreloadedHSTSData[] = {
 
 	hstsLiteralWriter = cLiteralWriter{out: out}
 	hstsBitWriter = trieWriter{
-		w:         &hstsLiteralWriter,
-		pinsets:   pinsets,
-		domainIds: domainIds,
-		huffman:   huffmanMap,
+		w:                    &hstsLiteralWriter,
+		pinsets:              pinsets,
+		domainIds:            domainIds,
+		expectCTReportURIIds: expectCTReportURIIds,
+		huffman:              huffmanMap,
 	}
 
 	rootPosition, err := writeEntries(&hstsBitWriter, hsts.Entries)
@@ -773,14 +797,15 @@ func (clw *cLiteralWriter) WriteByte(b byte) (err error) {
 // It also contains the other information needed for writing out a compressed
 // trie.
 type trieWriter struct {
-	w             io.ByteWriter
-	pinsets       map[string]pinsetData
-	domainIds     map[string]int
-	huffman       map[rune]bitsAndLen
-	b             byte
-	used          uint
-	position      int
-	huffmanCounts [129]int
+	w                    io.ByteWriter
+	pinsets              map[string]pinsetData
+	domainIds            map[string]int
+	expectCTReportURIIds map[string]int
+	huffman              map[rune]bitsAndLen
+	b                    byte
+	used                 uint
+	position             int
+	huffmanCounts        [129]int
 }
 
 func (w *trieWriter) WriteBits(bits, numBits uint) error {
@@ -1116,6 +1141,20 @@ func writeDispatchTables(w *trieWriter, ents reversedEntries, depth int) (positi
 					}
 					buf.WriteBit(includeSubdomainsForPinning)
 				}
+			}
+
+			if hsts.ExpectCT {
+				buf.WriteBit(1)
+				expectCTReportURIId, included := w.expectCTReportURIIds[hsts.ExpectCTReportURI]
+				if !included {
+					panic("missing expect-CT report URI ID for " + hsts.Name)
+				}
+				if expectCTReportURIId >= 16 {
+					panic("too many expect-CT report URIs")
+				}
+				buf.WriteBits(uint(expectCTReportURIId), 4)
+			} else {
+				buf.WriteBit(0)
 			}
 		} else {
 			subents.RemovePrefix(1)
