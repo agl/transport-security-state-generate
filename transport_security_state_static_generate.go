@@ -525,7 +525,7 @@ func writeExpectCTReportURIIds(out *bufio.Writer, entries []hsts) map[string]int
 	for _, e := range entries {
 		if e.ExpectCT {
 			if _, seen := result[e.ExpectCTReportURI]; !seen {
-				out.WriteString("  \"" + e.ExpectCTReportURI + "\",\n")
+				out.WriteString("    \"" + e.ExpectCTReportURI + "\",\n")
 				result[e.ExpectCTReportURI] = i
 				i = i + 1
 			}
