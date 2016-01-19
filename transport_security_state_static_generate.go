@@ -495,6 +495,8 @@ func writeHeader(out *bufio.Writer) {
 #ifndef NET_HTTP_TRANSPORT_SECURITY_STATE_STATIC_H_
 #define NET_HTTP_TRANSPORT_SECURITY_STATE_STATIC_H_
 
+#include <stdint.h>
+
 `)
 
 }
@@ -525,7 +527,7 @@ func writeExpectCTReportURIIds(out *bufio.Writer, entries []hsts) map[string]int
 	for _, e := range entries {
 		if e.ExpectCT {
 			if _, seen := result[e.ExpectCTReportURI]; !seen {
-				out.WriteString("  \"" + e.ExpectCTReportURI + "\",\n")
+				out.WriteString("    \"" + e.ExpectCTReportURI + "\",\n")
 				result[e.ExpectCTReportURI] = i
 				i = i + 1
 			}
@@ -714,10 +716,10 @@ static const struct Pinset kPinsets[] = {
 	out.WriteString(`
 // kHSTSHuffmanTree describes a Huffman tree. The nodes of the tree are pairs
 // of uint8s. The last node in the array is the root of the tree. Each pair is
-// two uint8 values, the first is "left" and the second is "right". If a uint8
-// value has the MSB set then it represents a literal leaf value. Otherwise
-// it's a pointer to the n'th element of the array.
-static const uint8 kHSTSHuffmanTree[] = {
+// two uint8_t values, the first is "left" and the second is "right". If a
+// uint8_t value has the MSB set then it represents a literal leaf value.
+// Otherwise it's a pointer to the n'th element of the array.
+static const uint8_t kHSTSHuffmanTree[] = {
 `)
 
 	huffmanLiteralWriter := cLiteralWriter{out: out}
@@ -726,7 +728,7 @@ static const uint8 kHSTSHuffmanTree[] = {
 	out.WriteString(`
 };
 
-static const uint8 kPreloadedHSTSData[] = {
+static const uint8_t kPreloadedHSTSData[] = {
 `)
 
 	hstsLiteralWriter = cLiteralWriter{out: out}
