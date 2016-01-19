@@ -1270,7 +1270,10 @@ func (l nodeList) Len() int {
 }
 
 func (l nodeList) Less(i, j int) bool {
-	return l[i].count < l[j].count
+	if l[i].count != l[j].count {
+		return l[i].count < l[j].count
+	}
+	return l[i].value < l[j].value
 }
 
 func (l nodeList) Swap(i, j int) {
