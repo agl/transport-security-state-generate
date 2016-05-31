@@ -1,5 +1,4 @@
-This repo contains the script that's used to update Chromium's HSTS preloading.
+This script is now [part of `hstspreload`](https://github.com/chromium/hstspreload/blob/master/cmd/transport_security_state_static_generate/transport_security_state_static_generate.go).
 
-The HSTS data itself is kept in net/base/transport_security_state_static.[json|certs] (in the Chromium repo) and is shared with Firefox. At checkin-time, the JSON is converted into a C++ header file for compilation into the binary.
-
-This script is the code that does the conversion. It doesn't live in the Chromium repo because it's Go code, which is not an official language for Chromium.
+It will hopefully be incorporated into the Chromium build process some day.  
+See [crbug.com/595493](https://crbug.com/595493) for progress.
